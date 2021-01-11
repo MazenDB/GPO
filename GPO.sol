@@ -11,8 +11,8 @@ contract Registration {
     
     
     event ManufacturerRegistered(address manufactuer);
-    event DistributorRegistered(address manufactuer);
-    event HealthProviderRegistered(address manufactuer);
+    event DistributorRegistered(address distributor);
+    event HealthProviderRegistered(address healthProvider);
 
     modifier onlyGPO{
       require(msg.sender == GPO,
@@ -25,17 +25,17 @@ contract Registration {
         GPO=msg.sender;
     }
     
-    function regsiterManuf() public payable{
+    function registerManufacturer() public payable{
         require(!manufacturers[msg.sender] && !distributors[msg.sender] && !healthproviders[msg.sender],
         "Address already used");
         require(msg.value>=manufacuterFee,
-        "Administration fees insufficient");
+        "Admission fee insufficient");
         
         manufacturers[msg.sender]=true;
         emit ManufacturerRegistered(msg.sender);
     }
     
-    function regsiterDist(address d) public onlyGPO{
+    function registerDistributor(address d) public onlyGPO{
         require(!manufacturers[d] && !distributors[d] && !healthproviders[d],
         "Address already used");
         
@@ -43,11 +43,11 @@ contract Registration {
         emit DistributorRegistered(d);
     }
     
-    function regsiterHP() public payable{
+    function registerProvider() public payable{
         require(!manufacturers[msg.sender] && !distributors[msg.sender] && !healthproviders[msg.sender],
         "Address already used");
         require(msg.value>=HealthProviderPFee,
-        "Administration fees insufficient");
+        "Admission fee insufficient");
 
         healthproviders[msg.sender]=true;
         emit HealthProviderRegistered(msg.sender);
@@ -75,12 +75,12 @@ contract Registration {
 
 contract PurchaseNegotiation{
     Registration registrationContract;
-    
+    uint public contractAddresses;
     enum status{
         NewContract,
-        ManufacturerConfirmed,
-        GPOConfirmed,
-        ContractRejected,
+        Negotiating,
+        PriceConfirmed,
+        PriceRejected,
         ContractClosed
     }
     
@@ -93,22 +93,15 @@ contract PurchaseNegotiation{
         status orderStatus;
     }
     
-    mapping(bytes32=>contractType) contracts;
+    mapping(uint=>contractType) public contracts;
     
-    event NewContractPublished(bytes32 contractAddress, uint quantityOrdered, address manufacturer, uint priceRequested);
+    event NewContractPublished(uint contractAddress, uint quantityOrdered, address manufacturer);
 
-    event PriceNegotiation(bytes32 contractAddress, uint newPrice);
+    event PriceNegotiation(uint contractAddress, uint newPrice);
 
-    event ContractRejected(bytes32 contractAddress);
+    event ContractConfirmed(uint contractAddress, uint quantity, address manufacturer, uint price);
     
-    event ContractConfirmed(bytes32 contractAddress, uint quantity, address manufacturer, uint price);
-    
-    event ContractClosed(bytes32 contractAddress);
-    
-    event DistributorAssigned(bytes32 contractAddress, address distributor);
-
-    event DeliveredToDistributor(bytes32 contractAddress, address distributor);
-
+    event ContractClosed(uint contractAddress);
 
     modifier onlyGPO{
       require(registrationContract.isGPO(msg.sender),
@@ -126,73 +119,63 @@ contract PurchaseNegotiation{
     
     constructor(address registrationAddress)public {
         registrationContract=Registration(registrationAddress);
-        
+        contractAddresses=uint(keccak256(abi.encodePacked(msg.sender,now,address(this))));
+
     }
     
-    function newContract(uint productID, uint quantity, address manufacturer, uint price) public onlyGPO {
+    function newContract(uint productID, uint quantity, address manufacturer) public onlyGPO {
         require(registrationContract.manufacturerExists(manufacturer),
         "Manufacturer address not recognized."
         );
-
-        bytes32 temp=keccak256(abi.encodePacked(msg.sender,now,address(this),productID));
-        contracts[temp]=contractType(manufacturer,address(0),productID,quantity,price,status.NewContract);
+        contractAddresses++;
+        contracts[contractAddresses]=contractType(manufacturer,address(0),productID,quantity,0,status.NewContract);
         
-        emit NewContractPublished(temp, quantity, manufacturer, price);
+        emit NewContractPublished(contractAddresses, quantity, manufacturer);
 
     }
     
-    function negotiateContract(bytes32 contractAddress, uint newPrice) public onlyManufacturer{
-        require(contracts[contractAddress].orderStatus==status.NewContract,
+    function negotiateContract(uint contractAddress, uint newPrice) public onlyManufacturer{
+        require(contracts[contractAddress].orderStatus==status.NewContract  || contracts[contractAddress].orderStatus==status.PriceRejected,
         "Contract not available for price negotiation."
         );
-
-        if(contracts[contractAddress].price!=newPrice){
-            contracts[contractAddress].price=newPrice;
-            emit PriceNegotiation(contractAddress, newPrice);
-        }
-        
-        contracts[contractAddress].orderStatus=status.ManufacturerConfirmed;
+        require(contracts[contractAddress].manufacturer==msg.sender,
+        "Manufacturer not authorized"    
+        );
+        emit PriceNegotiation(contractAddress, newPrice);
+        contracts[contractAddress].price=newPrice;
+        contracts[contractAddress].orderStatus=status.Negotiating;
 
     }
-    
-    function rejectContract(bytes32 contractAddress) public onlyManufacturer{
-        require(contracts[contractAddress].orderStatus==status.NewContract,
+
+    function contractStatus(uint contractAddress, bool accepted) public onlyGPO{
+        require(contracts[contractAddress].orderStatus==status.Negotiating,
         "Contract not available for price negotiation."
         );
-        
-        contracts[contractAddress].orderStatus=status.ContractRejected;
-        emit ContractRejected(contractAddress);
-    }
-    
-    function confirmContract(bytes32 contractAddress) public onlyGPO {
-        require(contracts[contractAddress].orderStatus==status.ManufacturerConfirmed,
-        "Manufacturer did not accept the contract."
-        );
-        
-        contracts[contractAddress].orderStatus=status.GPOConfirmed;
+        if(accepted){
+            contracts[contractAddress].orderStatus=status.PriceConfirmed;
         emit ContractConfirmed(contractAddress, contracts[contractAddress].quantity, contracts[contractAddress].manufacturer, contracts[contractAddress].price);
-        
-
+        }
+        else{
+            contracts[contractAddress].orderStatus=status.PriceRejected;
+        }
     }
     
-    function assignDistributor(bytes32 contractAddress, address distributor) public onlyGPO{
-        contracts[contractAddress].distributor=distributor;
-        emit DistributorAssigned(contractAddress, distributor);
-    }
     
-    function deliverToDistributor(bytes32 contractAddress, address distributor) public onlyGPO{
-        emit DeliveredToDistributor(contractAddress, distributor);
-    }
-    
-    function closeContract(bytes32 contractAddress) public onlyGPO {
-        require(contracts[contractAddress].orderStatus==status.GPOConfirmed,
+    function assignDistributor(uint contractAddress, address distributor) public onlyGPO{
+        require(contracts[contractAddress].orderStatus==status.PriceConfirmed,
         "Contract not confirmed."
         );
-        
-        contracts[contractAddress].orderStatus=status.ContractClosed;
+        require(registrationContract.distributorExists(distributor),
+        "Distributor adaddress not valid"
+        );
+        contracts[contractAddress].distributor=distributor;
         emit ContractClosed(contractAddress);
 
     }
+    
+
+    
+
 } 
 
 contract PurchaseOrders{
@@ -226,7 +209,7 @@ contract PurchaseOrders{
     }
     
     event POsubmitted(uint POnumber, address healthProvider, address distributor);
-    event orderDelivered(uint POnumber);
+    event OrderDelivered(uint POnumber);
     
     function submitPO(uint POnumber, address distributor) public onlyHP{
         POs[POnumber]=PO_type(msg.sender,distributor,false);
@@ -234,9 +217,13 @@ contract PurchaseOrders{
 
     }
     
-    function deliverOrder(uint POnumber)public onlyDistributor{
+    function deliverStatus(uint POnumber)public onlyDistributor{
+        require(POs[POnumber].distributor==msg.sender,
+        "Distributor not authorized"
+        );
+        
         POs[POnumber].delivered=true;
-        emit orderDelivered(POnumber);
+        emit OrderDelivered(POnumber);
 
     }
 } 
@@ -244,7 +231,7 @@ contract PurchaseOrders{
 contract RebatesSettelment{
     Registration registrationContract;
     
-    mapping(bytes32=>uint) rebateRequests;
+    mapping(uint=>uint) rebateRequests;
     
     modifier onlyDistributor{
       require(registrationContract.distributorExists(msg.sender),
@@ -260,8 +247,8 @@ contract RebatesSettelment{
       _;
     }   
     
-    event RequestSubmitted(bytes32 contractAddress, address distributor, address manufacturer, uint amountRequested);
-    event RequestApproved(bytes32 contractAddress);
+    event RequestSubmitted(uint contractAddress, address distributor, address manufacturer, uint amountRequested);
+    event RequestApproved(uint contractAddress);
     
     constructor(address registrationAddress)public {
         registrationContract=Registration(registrationAddress);
@@ -269,7 +256,7 @@ contract RebatesSettelment{
     }
     
     
-    function submitRebateRequest(bytes32 contractAddress, uint amount, address manufacturer) public onlyDistributor{
+    function submitRebateRequest(uint contractAddress, uint amount, address manufacturer) public onlyDistributor{
         require(registrationContract.manufacturerExists(manufacturer),
         "Manufacturer address not authorized."
         );
@@ -277,16 +264,17 @@ contract RebatesSettelment{
         emit RequestSubmitted(contractAddress,msg.sender,manufacturer,amount);
     }
     
-    function approveRebateRequest(bytes32 contractAddress, address payable manufacturer) public payable onlyManufacturer{
+    
+    function approveRebateRequest(uint contractAddress, address payable distributor) public payable onlyManufacturer{
         require(rebateRequests[contractAddress]>0,
         "Rebate request not submitted for this contract."
         );
         require(msg.value>=rebateRequests[contractAddress],
         "Transferred amount insufficient."
         );
-        
+        rebateRequests[contractAddress]=0;
         emit RequestApproved(contractAddress);
-        manufacturer.transfer(msg.value);
+        distributor.transfer(msg.value);
         
     }
 } 
